@@ -228,3 +228,76 @@ NET:
        [    0.073488] Booting paravirtualized kernel on KVM
 
 ## 5. Как настроен sysctl fs.nr_open на системе по-умолчанию? Определите, что означает этот параметр. Какой другой существующий лимит не позволит достичь такого числа (ulimit --help)?
+
+       vagrant@sysadm-fs:~$ sysctl fs.nr_open
+       fs.nr_open = 1048576
+
+Согласно man это параметр отвечает за максимальное количество открытых файловых дескрипторов.
+
+        vagrant@sysadm-fs:~$ ulimit --help
+        ulimit: ulimit [-SHabcdefiklmnpqrstuvxPT] [limit]
+            Modify shell resource limits.
+        
+            Provides control over the resources available to the shell and processes
+            it creates, on systems that allow such control.
+
+Не позволит достичь этого количетсва ulimit, т.к. у него по умолчанию задано 1024 файлового дескрптора для процесса
+
+        vagrant@sysadm-fs:~$ ulimit -n
+        1024
+
+## 6. Запустите любой долгоживущий процесс (не ls, который отработает мгновенно, а, например, sleep 1h) в отдельном неймспейсе процессов; покажите, что ваш процесс работает под PID 1 через nsenter. Для простоты работайте в данном задании под root (sudo -i). Под обычным пользователем требуются дополнительные опции (--map-root-user) и т.д.
+
+Воспользовался командой unshare, для запуска в отдельном ns
+
+         vagrant@sysadm-fs:~$ sudo -i
+         root@sysadm-fs:~# unshare --fork --pid --mount-proc sleep 1h
+         ^Z
+         [1]+  Stopped                 unshare --fork --pid --mount-proc sleep 1h
+         root@sysadm-fs:~# ps au -H
+         USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+         vagrant     1857  0.0  0.2   7236  4072 pts/0    Ss   11:14   0:00 -bash
+         root        2207  0.0  0.2   9260  4576 pts/0    S    11:43   0:00   sudo -i
+         root        2208  0.0  0.2   7236  4152 pts/0    S    11:43   0:00     -bash
+         root        2219  0.0  0.0   5480   520 pts/0    T    11:44   0:00       unshare --fork --pid --mount-proc sleep 1h
+         root        2220  0.0  0.0   5476   516 pts/0    S    11:44   0:00         sleep 1h
+         root        2221  0.0  0.1   8888  3348 pts/0    R+   11:44   0:00       ps au -H
+         root         884  0.0  0.0   5828  1836 tty1     Ss+  11:13   0:00 /sbin/agetty -o -p -- \u --noclear tty1 linux
+         root@sysadm-fs:~# nsenter -t 2220 -a
+         root@sysadm-fs:/# ps
+             PID TTY          TIME CMD
+               1 pts/0    00:00:00 sleep
+               2 pts/0    00:00:00 bash
+              13 pts/0    00:00:00 ps
+
+## 7. Найдите информацию о том, что такое :(){ :|:& };:. Запустите эту команду в своей виртуальной машине Vagrant с Ubuntu 20.04 (это важно, поведение в других ОС не проверялось). Некоторое время все будет "плохо", после чего (минуты) – ОС должна стабилизироваться. Вызов dmesg расскажет, какой механизм помог автоматической стабилизации. Как настроен этот механизм по-умолчанию, и как изменить число процессов, которое можно создать в сессии?
+
+:(){ :|:& };: - форк бомба, которая приводит к бесконечному копированию процесса. Прервал работу, судя по выводу dmesg, cgroup
+
+        -bash: fork: Resource temporarily unavailable
+        
+        [1]+  Done                    : | :
+        vagrant@sysadm-fs:~$ dmesg
+        ...
+        [ 2141.088207] cgroup: fork rejected by pids controller in /user.slice/user-1000.slice/session-3.scope
+
+Для увеличения числа процессов нужно поменять настройку TasksMax:
+
+        vagrant@sysadm-fs:~$ cat /usr/lib/systemd/system/user-.slice.d/10-defaults.conf
+        #  SPDX-License-Identifier: LGPL-2.1+
+        #
+        #  This file is part of systemd.
+        #
+        #  systemd is free software; you can redistribute it and/or modify it
+        #  under the terms of the GNU Lesser General Public License as published by
+        #  the Free Software Foundation; either version 2.1 of the License, or
+        #  (at your option) any later version.
+        
+        [Unit]
+        Description=User Slice of UID %j
+        Documentation=man:user@.service(5)
+        After=systemd-user-sessions.service
+        StopWhenUnneeded=yes
+        
+        [Slice]
+        TasksMax=33%
